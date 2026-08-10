@@ -1,0 +1,53 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Ghost blog. Uses a dedicated `ghost` database on the shared `mysql` service.
+# ghost-init creates that DB + user (idempotent) before the app starts, exactly
+# like the k3s ghost-init-db Job. Content (themes, images, sqlite-less data)
+# persists under ${DATA_ROOT}/ghost.
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  backbone:
+    external: true
+
+services:
+  # One-shot DB provisioning (create ghost db + user on shared mysql).
+  ghost-init:
+    image: mysql:8.4.10
+    restart: "no"
+    networks: [backbone]
+    volumes:
+      - ../../scripts:/provision:ro
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_ROOT_PASSWORD: ${PROVISION_MYSQL_ROOT_PASSWORD}
+      DB_NAME: ${database__connection__database}
+      DB_USER: ${database__connection__user}
+      DB_PASSWORD: ${database__connection__password}
+    command: ["sh", "/provision/provision-mysql.sh"]
+
+  ghost:
+    image: ghost:5-alpine
+    restart: unless-stopped
+    depends_on:
+      ghost-init:
+        condition: service_completed_successfully
+    env_file: [.env]                 # database__connection__user/password/database
+    environment:
+      url: "http://${PUBLIC_IP}:30368"
+      database__client: "mysql"
+      database__connection__host: "mysql"
+      NODE_ENV: "production"
+    ports:
+      - "30368:2368"                 # NodePort 30368
+    volumes:
+      - ${DATA_ROOT}/ghost:/var/lib/ghost/content
+    networks: [backbone]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:2368/ghost/api/v4/admin/site/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }

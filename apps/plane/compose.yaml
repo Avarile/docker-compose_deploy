@@ -1,0 +1,223 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Plane (self-managed, v2.6.3) — the docker-compose replica of the k3s `plane`
+# namespace. 13 long-running services + 3 one-shot provisioners + a migrator.
+#
+# Reuses the SHARED infra (not Plane's bundled db/redis/mq/minio): Plane keeps
+# its stock hostnames plane-db / plane-redis / plane-mq / plane-minio, which
+# resolve to pgvector / redis / rabbitmq / minio via network aliases declared in
+# infra/compose.yaml — exactly like the k8s ExternalName services did.
+#
+# Startup order (via depends_on):
+#   plane-init-db / -mq / -minio  →  migrator  →  all app services  →  proxy
+# The proxy publishes NodePort 30808 (host Caddy → 127.0.0.1:30808).
+#
+# NOTE: PI/AI and email services are intentionally omitted (same as k3s); /pi/
+# returns 502 by design.
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  backbone:
+    external: true
+
+# Common wiring for every long-running Plane service (envFrom config + secret).
+x-plane-common: &plane-common
+  restart: unless-stopped
+  networks: [backbone]
+  env_file:
+    - plane-config.env       # non-secret (tracked)
+    - .env                   # secret (gitignored)
+  depends_on:
+    migrator:
+      condition: service_completed_successfully
+
+services:
+  # ══ one-shot provisioning (idempotent; self-wait for infra) ════════════════
+  plane-init-db:
+    image: postgres:17-alpine
+    restart: "no"
+    networks: [backbone]
+    volumes: [../../scripts:/provision:ro]
+    environment:
+      PGHOST: pgvector
+      PGUSER: ${PROVISION_PG_USER}
+      PGPASSWORD: ${PROVISION_PG_PASSWORD}
+      NEW_ROLE: plane
+      NEW_ROLE_PASSWORD: ${POSTGRES_PASSWORD}
+      NEW_DATABASES: "plane"
+      NEW_OWNER: plane
+    command: ["sh", "/provision/provision-postgres.sh"]
+
+  plane-init-mq:
+    image: curlimages/curl:8.10.1
+    restart: "no"
+    networks: [backbone]
+    volumes: [../../scripts:/provision:ro]
+    environment:
+      MQ_API: "http://rabbitmq:15672/api"
+      ADMIN_USER: ${PROVISION_MQ_USER}
+      ADMIN_PASS: ${PROVISION_MQ_PASSWORD}
+      APP_USER: ${RABBITMQ_DEFAULT_USER}
+      APP_PASS: ${RABBITMQ_DEFAULT_PASS}
+      VHOST: plane
+    entrypoint: ["sh", "/provision/provision-rabbitmq.sh"]
+
+  plane-init-minio:
+    image: minio/mc:latest
+    restart: "no"
+    networks: [backbone]
+    volumes: [../../scripts:/provision:ro]
+    environment:
+      MINIO_ENDPOINT: "http://minio:9000"
+      ACCESS_KEY: ${AWS_ACCESS_KEY_ID}
+      SECRET_KEY: ${AWS_SECRET_ACCESS_KEY}
+      BUCKETS: "plane-uploads"
+    entrypoint: ["sh", "/provision/provision-minio.sh"]
+
+  # ══ one-shot DB migration (runs after provisioning, before the apps) ═══════
+  migrator:
+    image: makeplane/backend-commercial:v2.6.3
+    command: ["./bin/docker-entrypoint-migrator.sh"]
+    restart: "no"
+    networks: [backbone]
+    env_file: [plane-config.env, .env]
+    depends_on:
+      plane-init-db:
+        condition: service_completed_successfully
+      plane-init-mq:
+        condition: service_completed_successfully
+      plane-init-minio:
+        condition: service_completed_successfully
+
+  # ══ backend ════════════════════════════════════════════════════════════════
+  api:
+    <<: *plane-common
+    image: makeplane/backend-commercial:v2.6.3
+    command: ["./bin/docker-entrypoint-api-ee.sh"]
+    environment:
+      PORT: "8000"           # gunicorn binds $PORT; proxy routes to api:8000
+    deploy:
+      resources:
+        limits: { memory: 1G, cpus: "1.0" }
+
+  worker:
+    <<: *plane-common
+    image: makeplane/backend-commercial:v2.6.3
+    command: ["./bin/docker-entrypoint-worker.sh"]
+    deploy:
+      resources:
+        limits: { memory: 2G, cpus: "1.0" }
+
+  beat-worker:
+    <<: *plane-common
+    image: makeplane/backend-commercial:v2.6.3
+    command: ["./bin/docker-entrypoint-beat.sh"]
+    deploy:
+      resources:
+        limits: { memory: 256M, cpus: "0.25" }
+
+  automation-consumer:
+    <<: *plane-common
+    image: makeplane/backend-commercial:v2.6.3
+    command: ["./bin/docker-entrypoint-automation-consumer.sh"]
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }
+
+  outbox-poller:
+    <<: *plane-common
+    image: makeplane/backend-commercial:v2.6.3
+    command: ["./bin/docker-entrypoint-outbox-poller.sh"]
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }
+
+  # ══ frontend ═══════════════════════════════════════════════════════════════
+  web:
+    <<: *plane-common
+    # ⚠ LOCALLY-BUILT image (not on a registry) — must exist in this host's
+    # docker engine (docker load / docker build). For the stock upstream UI
+    # instead, use:  image: makeplane/web-commercial:v2.6.3  (and drop pull_policy)
+    image: cybernetics-project-web:release.2026-07-29T12-56-03Z.1
+    pull_policy: never
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }
+
+  space:
+    <<: *plane-common
+    image: makeplane/space-commercial:v2.6.3
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }
+
+  admin:
+    <<: *plane-common
+    image: makeplane/admin-commercial:v2.6.3
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }
+
+  # ══ realtime ═══════════════════════════════════════════════════════════════
+  live:
+    <<: *plane-common
+    image: makeplane/live-commercial:v2.6.3
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }
+
+  iframely:
+    <<: *plane-common
+    image: makeplane/iframely:v1.2.0
+    environment:
+      PORT: "8061"           # iframely must bind 8061
+      WORKERS: "2"           # cap workers (default forks one per CPU → OOM)
+    deploy:
+      resources:
+        limits: { memory: 1G, cpus: "0.5" }
+
+  # ══ platform ═══════════════════════════════════════════════════════════════
+  monitor:
+    <<: *plane-common
+    image: makeplane/monitor-commercial:v2.6.3
+    environment:
+      PORT: "8080"
+      # prime-client registers with prime.plane.so using the bare domain
+      # (no :port) — override the config's https://... APP_DOMAIN.
+      APP_DOMAIN: "projects.avarile.com"
+    volumes:
+      - ${DATA_ROOT}/plane-monitor:/app
+    deploy:
+      resources:
+        limits: { memory: 256M, cpus: "0.25" }
+
+  silo:
+    <<: *plane-common
+    image: makeplane/silo-commercial:v2.6.3
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }
+
+  # ══ edge proxy (Plane's bundled Caddy; publishes the single ingress port) ══
+  proxy:
+    image: makeplane/proxy-commercial:v2.6.3
+    restart: unless-stopped
+    networks: [backbone]
+    env_file: [plane-config.env, .env]
+    ports:
+      - "30808:80"           # NodePort 30808 (host Caddy → 127.0.0.1:30808)
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      web:
+        condition: service_started
+      api:
+        condition: service_started
+      space:
+        condition: service_started
+      admin:
+        condition: service_started
+      live:
+        condition: service_started
+    deploy:
+      resources:
+        limits: { memory: 128M, cpus: "0.25" }

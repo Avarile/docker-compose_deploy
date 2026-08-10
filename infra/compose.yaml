@@ -1,0 +1,166 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared backing services — the docker-compose replica of the k3s `infra`
+# namespace. Service names match the k8s Service names so app connection
+# strings line up (pgvector, mysql, redis, rabbitmq, minio, qdrant, meilisearch).
+#
+# Plane keeps its stock compose hostnames (plane-db / plane-redis / plane-mq /
+# plane-minio); those are wired here as NETWORK ALIASES on the corresponding
+# infra service, exactly like the ExternalName aliases did in k8s.
+#
+# Host ports preserve the k3s NodePort numbers so the existing host Caddy keeps
+# working unchanged. Data is bind-mounted under ${DATA_ROOT} (mirrors ~/k3s-data).
+#
+# Standalone:  docker compose -f infra/compose.yaml --env-file ../.env --env-file .env up -d
+# Orchestrated: from the repo root, `make infra`  (or `make up`)
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  backbone:
+    external: true
+
+services:
+  # ── PostgreSQL + pgvector (cluster-wide superuser DB) ──────────────────────
+  pgvector:
+    image: pgvector/pgvector:pg17
+    command: ["postgres", "-c", "max_connections=300"]
+    restart: unless-stopped
+    env_file: [.env]
+    ports:
+      - "30898:5432"          # NodePort 30898
+    volumes:
+      - ${DATA_ROOT}/postgres:/var/lib/postgresql/data
+    networks:
+      backbone:
+        aliases: [plane-db]   # Plane's stock hostname → shared pgvector
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { memory: 2G, cpus: "1.0" }
+
+  # ── MySQL (ghost + gitea dedicated DBs live here) ──────────────────────────
+  mysql:
+    image: mysql:8.4.10
+    command: ["--max-connections=300"]
+    restart: unless-stopped
+    env_file: [.env]
+    ports:
+      - "30306:3306"          # NodePort 30306
+    volumes:
+      - ${DATA_ROOT}/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { memory: 2G, cpus: "1.0" }
+
+  # ── Redis (logical DBs: 0 cybernetics, 1 plane, 3 twenty) ──────────────────
+  redis:
+    image: redis:7.4-alpine
+    # requirepass is interpolated from REDIS_PASSWORD in infra/.env at parse time.
+    command: ["redis-server", "--save", "20", "1", "--loglevel", "warning", "--requirepass", "${REDIS_PASSWORD}"]
+    restart: unless-stopped
+    env_file: [.env]
+    ports:
+      - "30490:6379"          # NodePort 30490
+    volumes:
+      - ${DATA_ROOT}/redis:/data
+    networks:
+      backbone:
+        aliases: [plane-redis]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }
+
+  # ── RabbitMQ (management) — Plane vhost/user provisioned by plane-init ──────
+  rabbitmq:
+    image: rabbitmq:3.13.7-management-alpine
+    restart: unless-stopped
+    env_file: [.env]
+    ports:
+      - "30672:5672"          # AMQP     NodePort 30672
+      - "31672:15672"         # mgmt UI  NodePort 31672
+    volumes:
+      - ${DATA_ROOT}/rabbitmq/data:/var/lib/rabbitmq
+      - ${DATA_ROOT}/rabbitmq/log:/var/log/rabbitmq
+    networks:
+      backbone:
+        aliases: [plane-mq]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits: { memory: 1G, cpus: "1.0" }
+
+  # ── MinIO (S3) — buckets: plane-uploads, twenty, public, private ───────────
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    restart: unless-stopped
+    env_file: [.env]
+    ports:
+      - "30900:9000"          # API      NodePort 30900
+      - "30901:9001"          # console  NodePort 30901
+    volumes:
+      - ${DATA_ROOT}/minio:/data
+    networks:
+      backbone:
+        aliases: [plane-minio]
+    # No healthcheck: the minio server image is UBI-micro (no curl/mc). The
+    # *-init-minio jobs retry the mc alias themselves, so nothing waits on it.
+    deploy:
+      resources:
+        limits: { memory: 1G, cpus: "1.0" }
+
+  # ── Qdrant (vector DB, no auth configured) ─────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.13.4
+    restart: unless-stopped
+    ports:
+      - "30333:6333"          # HTTP  NodePort 30333
+      - "30334:6334"          # gRPC  NodePort 30334
+    volumes:
+      - ${DATA_ROOT}/qdrant:/qdrant/storage
+    networks:
+      - backbone
+    # No healthcheck: distroless image ships no shell/curl. Nothing depends on it.
+    deploy:
+      resources:
+        limits: { memory: 2G, cpus: "1.0" }
+
+  # ── Meilisearch (search) ───────────────────────────────────────────────────
+  meilisearch:
+    image: getmeili/meilisearch:v1.22.1
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      MEILI_ENV: development
+      MEILI_NO_ANALYTICS: "true"
+    ports:
+      - "30770:7700"          # NodePort 30770
+    volumes:
+      - ${DATA_ROOT}/meilisearch:/data.ms
+    networks:
+      - backbone
+    # No healthcheck: minimal image has no curl/wget. Nothing depends on it.
+    deploy:
+      resources:
+        limits: { memory: 2G, cpus: "1.0" }

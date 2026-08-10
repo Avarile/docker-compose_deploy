@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Vaultwarden — password manager. Live behind host Caddy at admin.avarile.com
+# (Caddy terminates TLS → 127.0.0.1:30820). Web-crypto login REQUIRES https +
+# a real domain, so DOMAIN must match the Caddyfile block / DNS record.
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  backbone:
+    external: true
+
+services:
+  vaultwarden:
+    image: vaultwarden/server:1.37.1-alpine
+    restart: unless-stopped
+    env_file: [.env]                 # ADMIN_TOKEN
+    environment:
+      DOMAIN: "https://admin.avarile.com"
+      # Leave signups on only until the first account is registered, then set
+      # SIGNUPS_ALLOWED=false in .env and `docker compose up -d vaultwarden`.
+      SIGNUPS_ALLOWED: "true"
+      WEBSOCKET_ENABLED: "true"
+      ROCKET_PORT: "80"
+    ports:
+      - "30820:80"                   # NodePort 30820 (Caddy → 127.0.0.1:30820)
+    volumes:
+      - ${DATA_ROOT}/vaultwarden:/data
+    networks: [backbone]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/alive"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }

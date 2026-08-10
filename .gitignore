@@ -1,0 +1,8 @@
+# Never commit real credentials — only the *.env.example templates are tracked.
+.env
+**/.env
+!.env.example
+!**/.env.example
+
+# Local persistent data (bind mounts).
+data/

@@ -1,0 +1,91 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Twenty CRM — server + worker. Reuses shared infra: a dedicated `twenty`
+# database on pgvector, Redis logical DB 3, and the `twenty` bucket on MinIO.
+# Two one-shot init jobs create the DB and the bucket (like the k3s init-jobs);
+# the server runs migrations on boot, the worker relies on it (DISABLE_DB_MIGRATIONS).
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  backbone:
+    external: true
+
+# Shared config for server + worker (non-secret; secrets come via env_file).
+x-twenty-env: &twenty-env
+  SERVER_URL: "http://${PUBLIC_IP}:30310"
+  NODE_PORT: "3000"
+  STORAGE_TYPE: "s3"
+  STORAGE_S3_REGION: "us-east-1"
+  STORAGE_S3_NAME: "twenty"
+  STORAGE_S3_ENDPOINT: "http://minio:9000"
+  STORAGE_S3_PRESIGNED_URL_ENABLED: "false"
+
+services:
+  # ── init: create the `twenty` database on shared pgvector ──
+  twenty-init-db:
+    image: postgres:17-alpine
+    restart: "no"
+    networks: [backbone]
+    volumes:
+      - ../../scripts:/provision:ro
+    environment:
+      PGHOST: pgvector
+      PGUSER: ${PROVISION_PG_USER}
+      PGPASSWORD: ${PROVISION_PG_PASSWORD}
+      NEW_DATABASES: "twenty"
+    command: ["sh", "/provision/provision-postgres.sh"]
+
+  # ── init: create the `twenty` bucket on shared minio ──
+  twenty-init-minio:
+    image: minio/mc:latest
+    restart: "no"
+    networks: [backbone]
+    volumes:
+      - ../../scripts:/provision:ro
+    environment:
+      MINIO_ENDPOINT: "http://minio:9000"
+      ACCESS_KEY: ${STORAGE_S3_ACCESS_KEY_ID}
+      SECRET_KEY: ${STORAGE_S3_SECRET_ACCESS_KEY}
+      BUCKETS: "twenty"
+    entrypoint: ["sh", "/provision/provision-minio.sh"]
+
+  # ── server ──
+  twenty-server:
+    image: twentycrm/twenty:v2.2.0
+    restart: unless-stopped
+    depends_on:
+      twenty-init-db:
+        condition: service_completed_successfully
+      twenty-init-minio:
+        condition: service_completed_successfully
+    env_file: [.env]
+    environment: *twenty-env
+    ports:
+      - "30310:3000"                 # NodePort 30310
+    networks: [backbone]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/healthz',r=>process.exit(r.statusCode<400?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+    deploy:
+      resources:
+        limits: { memory: 2G, cpus: "1.5" }
+
+  # ── worker ──
+  twenty-worker:
+    image: twentycrm/twenty:v2.2.0
+    command: ["yarn", "worker:prod"]
+    restart: unless-stopped
+    depends_on:
+      twenty-server:
+        condition: service_healthy
+    env_file: [.env]
+    environment:
+      <<: *twenty-env
+      DISABLE_DB_MIGRATIONS: "true"
+      DISABLE_CRON_JOBS_REGISTRATION: "true"
+    networks: [backbone]
+    deploy:
+      resources:
+        limits: { memory: 1536M, cpus: "1.0" }

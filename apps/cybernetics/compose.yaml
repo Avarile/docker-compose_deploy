@@ -1,0 +1,108 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# cybernetics — custom data-centre app (Teable-derived). Reuses shared infra:
+# Postgres DBs `cybernetics` + `cybernetics_embedding`, Redis DB 0, MinIO
+# buckets `public` + `private`. First boot runs Prisma migrations (startup grace
+# up to ~10 min).
+#
+# ⚠ LOCALLY-BUILT IMAGE: cybernetics:release.2026-06-10T04-05-13Z.1 is not on any
+# registry (k3s imported it into containerd). It must exist in THIS host's docker
+# engine:  docker load -i cybernetics.tar   (or docker build ...). `pull_policy:
+# never` makes a missing image fail loudly — same intent as imagePullPolicy: Never.
+#
+# Browser-facing MinIO/app URLs use ${PUBLIC_IP}:<NodePort> so the same address
+# works for the container AND for presigned links served to the browser (faithful
+# to the k3s configmap, which deliberately used the node IP, not the cluster DNS).
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  backbone:
+    external: true
+
+services:
+  # ── init: create cybernetics + cybernetics_embedding databases ──
+  cybernetics-init-db:
+    image: postgres:17-alpine
+    restart: "no"
+    networks: [backbone]
+    volumes:
+      - ../../scripts:/provision:ro
+    environment:
+      PGHOST: pgvector
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      NEW_DATABASES: "cybernetics cybernetics_embedding"
+    command: ["sh", "/provision/provision-postgres.sh"]
+
+  # ── init: create public + private buckets ──
+  cybernetics-init-minio:
+    image: minio/mc:latest
+    restart: "no"
+    networks: [backbone]
+    volumes:
+      - ../../scripts:/provision:ro
+    environment:
+      MINIO_ENDPOINT: "http://minio:9000"
+      ACCESS_KEY: ${BACKEND_STORAGE_MINIO_ACCESS_KEY}
+      SECRET_KEY: ${BACKEND_STORAGE_MINIO_SECRET_KEY}
+      BUCKETS: "public private"
+    entrypoint: ["sh", "/provision/provision-minio.sh"]
+
+  cybernetics:
+    image: cybernetics:release.2026-06-10T04-05-13Z.1
+    pull_policy: never
+    restart: unless-stopped
+    depends_on:
+      cybernetics-init-db:
+        condition: service_completed_successfully
+      cybernetics-init-minio:
+        condition: service_completed_successfully
+    env_file: [.env]                 # composite DB/redis URLs + API keys (secret)
+    environment:
+      TIMEZONE: "UTC"
+      NODE_ENV: "production"
+      # ── Postgres (shared pgvector) ──
+      POSTGRES_HOST: "pgvector"
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: "cybernetics"
+      PUBLIC_DATABASE_PROXY: "${PUBLIC_IP}:30898"
+      # ── Redis (shared) ──
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      BACKEND_CACHE_PROVIDER: "redis"
+      # ── App ──
+      PORT: "3000"
+      SOCKET_PORT: "3001"
+      LOG_LEVEL: "info"
+      PUBLIC_ORIGIN: "http://${PUBLIC_IP}:30300"
+      API_DOC_DISENABLED: "false"
+      API_DOC_ENABLED_SNIPPET: "false"
+      CALC_CHUNK_SIZE: "400"
+      # ── Storage (shared MinIO; node IP so presigned links resolve in browser) ──
+      BACKEND_STORAGE_PROVIDER: "minio"
+      BACKEND_STORAGE_PUBLIC_BUCKET: "public"
+      BACKEND_STORAGE_PRIVATE_BUCKET: "private"
+      BACKEND_STORAGE_MINIO_ENDPOINT: "${PUBLIC_IP}"
+      BACKEND_STORAGE_MINIO_PORT: "30900"
+      BACKEND_STORAGE_MINIO_USE_SSL: "false"
+      BACKEND_STORAGE_PUBLIC_URL: "http://${PUBLIC_IP}:30900/public"
+      STORAGE_PREFIX: "http://${PUBLIC_IP}:30900"
+      # ── Misc ──
+      TEABLE_BASE_URL: "http://localhost:3000"
+      MASTRA_CORS_ORIGIN: "*"
+      ELEVENLABS_VOICE_ID: "nPczCjzI2devNBz1zQrb"
+    ports:
+      - "30300:3000"                 # HTTP   NodePort 30300
+      - "30301:3001"                 # socket NodePort 30301
+    volumes:
+      - ${DATA_ROOT}/cybernetics:/app/.assets
+    networks: [backbone]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/health',r=>process.exit(r.statusCode<400?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 10s
+      retries: 60
+      start_period: 60s
+    deploy:
+      resources:
+        limits: { memory: 4G, cpus: "2.0" }

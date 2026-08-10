@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Root orchestration for the whole stack.
+#
+# This file `include:`s every stack (infra + each app) so a single
+#     docker compose up -d
+# from this directory brings the entire platform up. Each stack is ALSO a
+# self-contained project you can run on its own (see its directory), which is
+# why every stack declares the shared `backbone` network as `external`.
+#
+# Bring the network up once before the first run:
+#     docker network create backbone
+# (or just run `make bootstrap`, which does it for you)
+#
+# Per-stack interpolation uses that stack's own .env (see each `env_file:` entry
+# below); container credentials are injected per-service via `env_file:` inside
+# each stack file. Shared knobs (DATA_ROOT, PUBLIC_IP, TZ) live in ./.env.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: platform
+
+include:
+  # ── shared backing services ────────────────────────────────────────────────
+  - path: infra/compose.yaml
+    env_file:
+      - .env
+      - infra/.env
+
+  # ── applications ───────────────────────────────────────────────────────────
+  - path: apps/vaultwarden/compose.yaml
+    env_file: [.env, apps/vaultwarden/.env]
+  - path: apps/drawio/compose.yaml
+    env_file: [.env]
+  - path: apps/main-website/compose.yaml
+    env_file: [.env]
+  - path: apps/ghost/compose.yaml
+    env_file: [.env, apps/ghost/.env]
+  - path: apps/gitea/compose.yaml
+    env_file: [.env, apps/gitea/.env]
+  - path: apps/twenty/compose.yaml
+    env_file: [.env, apps/twenty/.env]
+  - path: apps/cybernetics/compose.yaml
+    env_file: [.env, apps/cybernetics/.env]
+  - path: apps/plane/compose.yaml
+    env_file: [.env, apps/plane/.env]

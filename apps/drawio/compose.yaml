@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# draw.io — stateless diagram editor. No storage, no secrets. Public URL uses
+# the host IP + NodePort (no ingress/TLS in this stack yet). PUBLIC_IP comes
+# from the root .env.
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  backbone:
+    external: true
+
+services:
+  drawio:
+    image: jgraph/drawio:31.0.2
+    restart: unless-stopped
+    environment:
+      DRAWIO_BASE_URL: "http://${PUBLIC_IP}:30880"
+      PUBLIC_DNS: "${PUBLIC_IP}"
+    ports:
+      - "30880:8080"                 # NodePort 30880
+    networks: [backbone]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { memory: 1G, cpus: "1.0" }

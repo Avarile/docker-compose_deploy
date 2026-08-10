@@ -1,0 +1,35 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# main-website — stateless Next.js frontend.
+#
+# ⚠ LOCALLY-BUILT IMAGE: `main-website:latest` is not on any registry (k3s
+# imported it into containerd via `docker save | k3s ctr images import`). For
+# docker compose the image must exist in THIS host's docker engine. Either:
+#   • docker build -t main-website:latest /path/to/main-website-source , or
+#   • docker load -i main-website.tar   (if you have a saved tarball)
+# `pull_policy: never` makes a missing image fail loudly instead of hitting a
+# registry — same intent as the k8s imagePullPolicy: Never.
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  backbone:
+    external: true
+
+services:
+  main-website:
+    image: main-website:latest
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      NODE_ENV: "production"
+    ports:
+      - "30587:9587"                 # NodePort 30587
+    networks: [backbone]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9587/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }
