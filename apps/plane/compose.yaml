@@ -22,6 +22,7 @@ networks:
 # Common wiring for every long-running Plane service (envFrom config + secret).
 x-plane-common: &plane-common
   restart: unless-stopped
+  security_opt: [no-new-privileges:true]
   networks: [backbone]
   env_file:
     - plane-config.env       # non-secret (tracked)
@@ -35,6 +36,7 @@ services:
   plane-init-db:
     image: postgres:17-alpine
     restart: "no"
+    security_opt: [no-new-privileges:true]
     networks: [backbone]
     volumes: [../../scripts:/provision:ro]
     environment:
@@ -50,6 +52,7 @@ services:
   plane-init-mq:
     image: curlimages/curl:8.10.1
     restart: "no"
+    security_opt: [no-new-privileges:true]
     networks: [backbone]
     volumes: [../../scripts:/provision:ro]
     environment:
@@ -62,8 +65,9 @@ services:
     entrypoint: ["sh", "/provision/provision-rabbitmq.sh"]
 
   plane-init-minio:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     restart: "no"
+    security_opt: [no-new-privileges:true]
     networks: [backbone]
     volumes: [../../scripts:/provision:ro]
     environment:
@@ -78,6 +82,7 @@ services:
     image: makeplane/backend-commercial:v2.6.3
     command: ["./bin/docker-entrypoint-migrator.sh"]
     restart: "no"
+    security_opt: [no-new-privileges:true]
     networks: [backbone]
     env_file: [plane-config.env, .env]
     depends_on:
@@ -134,11 +139,13 @@ services:
   # ══ frontend ═══════════════════════════════════════════════════════════════
   web:
     <<: *plane-common
-    # ⚠ LOCALLY-BUILT image (not on a registry) — must exist in this host's
-    # docker engine (docker load / docker build). For the stock upstream UI
-    # instead, use:  image: makeplane/web-commercial:v2.6.3  (and drop pull_policy)
-    image: cybernetics-project-web:release.2026-07-29T12-56-03Z.1
-    pull_policy: never
+    # Custom rebrand of the Plane web UI, published to the private Gitea
+    # registry (same one every other image here is mirrored through — see
+    # k3s-deployment/supports/25-image-registry/). Requires a one-time
+    # `docker login gitea.avarile.com -u registry-bot` on this host before
+    # `docker compose pull` can fetch it. For the stock upstream UI instead,
+    # use: image: makeplane/web-commercial:v2.6.3
+    image: gitea.avarile.com/registry-bot/cybernetics-project-web:release.2026-07-29T12-56-03Z.1
     deploy:
       resources:
         limits: { memory: 512M, cpus: "0.5" }
@@ -201,10 +208,11 @@ services:
   proxy:
     image: makeplane/proxy-commercial:v2.6.3
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     networks: [backbone]
     env_file: [plane-config.env, .env]
     ports:
-      - "30808:80"           # NodePort 30808 (host Caddy → 127.0.0.1:30808)
+      - "127.0.0.1:30808:80"   # NodePort 30808 (host Caddy → 127.0.0.1:30808)
     depends_on:
       migrator:
         condition: service_completed_successfully

@@ -13,6 +13,7 @@ services:
   gitea-init:
     image: mysql:8.4.10
     restart: "no"
+    security_opt: [no-new-privileges:true]
     networks: [backbone]
     volumes:
       - ../../scripts:/provision:ro
@@ -27,6 +28,7 @@ services:
   gitea:
     image: gitea/gitea:1.26.4
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     depends_on:
       gitea-init:
         condition: service_completed_successfully
@@ -46,8 +48,8 @@ services:
       GITEA__service__DISABLE_REGISTRATION: "true"
       GITEA__service__SHOW_REGISTRATION_BUTTON: "false"
     ports:
-      - "30380:3000"                 # HTTP NodePort 30380
-      - "30722:22"                   # SSH  NodePort 30722
+      - "127.0.0.1:30380:3000"       # HTTP NodePort 30380 — Caddy reaches it here
+      - "30722:22"                   # SSH  NodePort 30722 — public: git+ssh doesn't route through Caddy
     volumes:
       - ${DATA_ROOT}/gitea:/data
     networks: [backbone]

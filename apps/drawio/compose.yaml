@@ -12,11 +12,12 @@ services:
   drawio:
     image: jgraph/drawio:31.0.2
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     environment:
       DRAWIO_BASE_URL: "http://${PUBLIC_IP}:30880"
       PUBLIC_DNS: "${PUBLIC_IP}"
     ports:
-      - "30880:8080"                 # NodePort 30880
+      - "127.0.0.1:30880:8080"       # NodePort 30880 — Caddy reaches it here
     networks: [backbone]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/"]

@@ -1,13 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # main-website — stateless Next.js frontend.
 #
-# ⚠ LOCALLY-BUILT IMAGE: `main-website:latest` is not on any registry (k3s
-# imported it into containerd via `docker save | k3s ctr images import`). For
-# docker compose the image must exist in THIS host's docker engine. Either:
-#   • docker build -t main-website:latest /path/to/main-website-source , or
-#   • docker load -i main-website.tar   (if you have a saved tarball)
-# `pull_policy: never` makes a missing image fail loudly instead of hitting a
-# registry — same intent as the k8s imagePullPolicy: Never.
+# Custom app image, published to the private Gitea registry (same one every
+# other image here is mirrored through — see
+# k3s-deployment/supports/25-image-registry/). Requires a one-time
+# `docker login gitea.avarile.com -u registry-bot` on this host before
+# `docker compose pull` can fetch it.
 # ─────────────────────────────────────────────────────────────────────────────
 
 networks:
@@ -16,13 +14,13 @@ networks:
 
 services:
   main-website:
-    image: main-website:latest
-    pull_policy: never
+    image: gitea.avarile.com/registry-bot/main-website:latest
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     environment:
       NODE_ENV: "production"
     ports:
-      - "30587:9587"                 # NodePort 30587
+      - "127.0.0.1:30587:9587"       # NodePort 30587 — Caddy reaches it here
     networks: [backbone]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9587/"]

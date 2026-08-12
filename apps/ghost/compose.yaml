@@ -14,6 +14,7 @@ services:
   ghost-init:
     image: mysql:8.4.10
     restart: "no"
+    security_opt: [no-new-privileges:true]
     networks: [backbone]
     volumes:
       - ../../scripts:/provision:ro
@@ -28,6 +29,7 @@ services:
   ghost:
     image: ghost:5-alpine
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     depends_on:
       ghost-init:
         condition: service_completed_successfully
@@ -38,7 +40,7 @@ services:
       database__connection__host: "mysql"
       NODE_ENV: "production"
     ports:
-      - "30368:2368"                 # NodePort 30368
+      - "127.0.0.1:30368:2368"       # NodePort 30368 — Caddy reaches it here
     volumes:
       - ${DATA_ROOT}/ghost:/var/lib/ghost/content
     networks: [backbone]

@@ -24,6 +24,7 @@ services:
   twenty-init-db:
     image: postgres:17-alpine
     restart: "no"
+    security_opt: [no-new-privileges:true]
     networks: [backbone]
     volumes:
       - ../../scripts:/provision:ro
@@ -36,8 +37,9 @@ services:
 
   # ── init: create the `twenty` bucket on shared minio ──
   twenty-init-minio:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     restart: "no"
+    security_opt: [no-new-privileges:true]
     networks: [backbone]
     volumes:
       - ../../scripts:/provision:ro
@@ -52,6 +54,7 @@ services:
   twenty-server:
     image: twentycrm/twenty:v2.2.0
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     depends_on:
       twenty-init-db:
         condition: service_completed_successfully
@@ -60,7 +63,7 @@ services:
     env_file: [.env]
     environment: *twenty-env
     ports:
-      - "30310:3000"                 # NodePort 30310
+      - "127.0.0.1:30310:3000"       # NodePort 30310 — Caddy reaches it here
     networks: [backbone]
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/healthz',r=>process.exit(r.statusCode<400?0:1)).on('error',()=>process.exit(1))\""]
@@ -77,6 +80,7 @@ services:
     image: twentycrm/twenty:v2.2.0
     command: ["yarn", "worker:prod"]
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     depends_on:
       twenty-server:
         condition: service_healthy

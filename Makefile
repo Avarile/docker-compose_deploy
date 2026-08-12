@@ -24,11 +24,14 @@ DATA_DIRS := postgres mysql redis rabbitmq/data rabbitmq/log minio qdrant \
              twenty plane-monitor plane
 
 .DEFAULT_GOAL := help
-.PHONY: help bootstrap network datadirs up infra apps down restart ps logs pull config
+.PHONY: help bootstrap network datadirs secrets up infra apps down restart ps logs pull config
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+secrets: ## Generate fresh .env files for a NEW deployment (skips existing; pass FORCE=1 to overwrite)
+	@./scripts/generate-secrets.sh $(if $(FORCE),--force)
 
 network: ## Create the shared external docker network (idempotent)
 	@docker network inspect $(NETWORK) >/dev/null 2>&1 || docker network create $(NETWORK)
