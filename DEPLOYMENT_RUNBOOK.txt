@@ -1,0 +1,209 @@
+DEPLOYMENT RUNBOOK — CLEAN DEBIAN 13 SERVER
+============================================
+Deploying the docker-deployment platform (infra + 8 apps) plus the host
+Caddy reverse proxy (../caddy) onto a brand-new Debian 13 host.
+
+
+0. WHAT YOU'RE STANDING UP
+---------------------------
+One Compose project ("platform") made up of:
+  - 7 shared backing services: Postgres/pgvector, MySQL, Redis, RabbitMQ,
+    MinIO, Qdrant, Meilisearch
+  - 8 apps: Plane (13 services), cybernetics, Ghost, Gitea, Twenty,
+    Vaultwarden, draw.io, main-website
+  - a host-level Caddy in front, acting as the only intended public
+    entrypoint
+
+All container ports bind to 127.0.0.1 except two, which are intentionally
+public:
+  - Gitea SSH        (30722)
+  - MinIO API         (30900)
+
+Resource planning: summed container memory LIMITS across the whole stack
+are roughly 30GB (a ceiling, not real usage). Size the box at 16GB RAM
+minimum, 32GB comfortable, 4+ vCPUs, and generous disk — Postgres, MySQL,
+and MinIO data all live under ${DATA_ROOT}.
+
+
+1. BASE OS PREP
+----------------
+  sudo apt update && sudo apt full-upgrade -y
+  sudo apt install -y ca-certificates curl gnupg git ufw openssl
+  sudo timedatectl set-timezone UTC   (or your TZ; matches the stack's TZ knob)
+
+
+2. INSTALL DOCKER ENGINE + COMPOSE PLUGIN
+-------------------------------------------
+Compose v2.20+ is required (for the `include:` directive used by the root
+compose.yaml).
+
+  sudo install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  sudo apt update
+  sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  sudo usermod -aG docker "$USER"   (log out/in, or `newgrp docker`, to pick this up)
+  docker compose version            (confirm v2.20+)
+
+Note: if Debian 13's codename isn't yet listed in Docker's repo when you
+run this, fall back to VERSION_CODENAME=bookworm in the sources line — the
+packages are compatible.
+
+
+3. INSTALL CADDY (public reverse proxy)
+-----------------------------------------
+  sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+  sudo apt update && sudo apt install -y caddy
+  sudo systemctl disable --now caddy   (leave it off until the Caddyfile is deployed — step 9)
+
+
+4. FIREWALL
+------------
+Only two container ports bind to all interfaces (30722 Gitea SSH, 30900
+MinIO API); everything else is loopback-only by design, so the exposure
+surface is small and predictable. No NodePort-range firewalling is needed
+here (unlike the k3s Caddyfile's warning, which doesn't apply to this
+Compose stack).
+
+  sudo ufw default deny incoming
+  sudo ufw default allow outgoing
+  sudo ufw allow 22/tcp        (SSH to the host itself — adjust if non-standard)
+  sudo ufw allow 80,443/tcp    (Caddy)
+  sudo ufw allow 30722/tcp     (Gitea SSH clone/push)
+  sudo ufw allow 30900/tcp     (MinIO API — cybernetics presigned URLs)
+  sudo ufw enable
+
+
+5. GET THE REPO ONTO THE BOX
+------------------------------
+  git clone <your-git-remote-for-dev-ops-or-docker-deployment> /home/avarile/dev-ops
+  cd /home/avarile/dev-ops/docker-deployment
+
+(Or, if the repo is already checked out via some other path on this box,
+just cd into it.)
+
+
+6. LOG IN TO THE PRIVATE REGISTRY
+------------------------------------
+Three images (cybernetics, Plane's rebranded "web", main-website) only
+exist on the private Gitea registry:
+
+  docker login gitea.avarile.com -u registry-bot
+  (password: the registry-bot pull token)
+
+
+7. CONFIGURE ENVIRONMENT
+--------------------------
+Shared knobs (.env):
+
+  cp .env.example .env
+  $EDITOR .env
+
+Set DATA_ROOT (absolute path, e.g.
+/home/avarile/dev-ops/docker-deployment/data) and PUBLIC_IP to THIS NEW
+HOST's address (LAN IP or public IP/domain — it gets baked into MinIO
+presigned URLs, cybernetics' origin, and several app URLs).
+
+Secrets — for a genuinely new box, don't reuse another host's
+credentials. Generate an independent set:
+
+  make secrets          (fills infra/.env + every apps/*/.env from *.env.example)
+  make secrets FORCE=1    (only if re-running and you want to regenerate everything)
+
+This resolves every CHANGE_ME_equals_infra_<KEY> cross-reference
+automatically (e.g. an app's copy of the Postgres password matching
+infra/.env).
+
+Domain-specific values to check — the compose files hardcode
+avarile.com / gitea.avarile.com in a few places beyond just registry
+pulls:
+  - apps/vaultwarden/compose.yaml:
+      DOMAIN: "https://admin.avarile.com"
+      (Vaultwarden's web-crypto login requires this to match real DNS + HTTPS)
+  - apps/plane/compose.yaml (monitor service):
+      APP_DOMAIN: "projects.avarile.com"
+
+If this new server serves the SAME domains (e.g. disaster-recovery /
+replacement box), leave these as-is. If it's a genuinely different
+deployment with different domains, edit those two values before bringing
+the stack up.
+
+
+8. BRING UP THE PLATFORM
+---------------------------
+  make bootstrap    (creates the `backbone` network + data dirs, then `up -d`)
+  make ps           (watch services settle — cybernetics/Plane migrations can take up to ~10 min)
+  make logs S=api   (tail one service if something looks stuck)
+
+The *-init one-shot containers create per-app databases/buckets/vhosts
+automatically and are idempotent.
+
+
+9. DEPLOY THE HOST CADDY (public entrypoint)
+-----------------------------------------------
+  cd /home/avarile/dev-ops/caddy
+
+Before deploying, confirm each domain in Caddyfile has a DNS A record
+pointing at this server's public IP (Caddy needs that for automatic
+ACME/HTTPS). Then:
+
+  sudo ./caddy_deploy.sh   (validates the Caddyfile, copies to /etc/caddy/, starts/reloads caddy)
+  sudo systemctl status caddy
+
+Note: the header comment in the Caddyfile is a leftover from the k3s
+topology it was ported from (the iptables/NodePort-range warning doesn't
+apply to this Docker Compose stack — see step 4), and Meilisearch is
+already pinned to MEILI_ENV=production here, so that warning doesn't
+apply either.
+
+
+10. VERIFY EACH SERVICE
+--------------------------
+  make ps                                       (all containers healthy/running)
+  curl -I http://127.0.0.1:30880                (draw.io)
+  curl -I http://127.0.0.1:30368                (ghost)
+  curl -I http://127.0.0.1:30380/api/healthz    (gitea)
+  curl -I http://127.0.0.1:30808                (plane proxy)
+  curl -I http://127.0.0.1:30300/health         (cybernetics)
+  curl -I http://127.0.0.1:30310/healthz        (twenty)
+  curl -I http://127.0.0.1:30820/alive          (vaultwarden)
+
+Then hit each public domain through Caddy from outside the host to
+confirm TLS + proxying.
+
+App-specific first-run steps:
+  - Vaultwarden: SIGNUPS_ALLOWED defaults to false. Temporarily flip it to
+    true in apps/vaultwarden/.env, run
+    `docker compose up -d vaultwarden`, register your first account, then
+    flip back and redeploy.
+  - Gitea: INSTALL_LOCK=true and self-registration is disabled — create
+    the admin user via CLI instead of the setup wizard:
+    `docker compose exec gitea gitea admin user create ...`
+  - Plane: PI/AI and email services are intentionally omitted — /pi/
+    returning 502 is expected.
+
+
+11. BACKUP BASELINE (recommended immediately after going live)
+------------------------------------------------------------------
+  make down
+  rsync -avz ./data/ /path/to/backup/location/
+  make up
+
+If migrating data from an existing k3s deployment instead of starting
+fresh, copy each ~/k3s-data/<svc> into the matching data/<svc> under
+DATA_ROOT BEFORE step 8's first `up`.
+
+
+SECURITY NOTE
+--------------
+The MinIO API port (30900) is deliberately public with no TLS at the
+container level — this relies on that exposure being an accepted
+tradeoff (cybernetics needs it for browser-facing presigned URLs).
+Confirm that's still acceptable for this box before going live, since
+it's the one backing-service port that isn't loopback-gated.
