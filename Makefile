@@ -21,7 +21,7 @@ INFRA     := pgvector mysql redis rabbitmq minio qdrant meilisearch
 DATA_ROOT ?= $(shell grep -E '^DATA_ROOT=' .env 2>/dev/null | cut -d= -f2)
 DATA_DIRS := postgres mysql redis rabbitmq/data rabbitmq/log minio qdrant \
              meilisearch vaultwarden ghost gitea cybernetics main-website \
-             twenty plane-monitor plane
+             twenty plane-monitor plane evershop
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap network datadirs secrets up infra apps down restart ps logs pull config

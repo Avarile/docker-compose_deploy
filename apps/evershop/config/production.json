@@ -1,0 +1,5 @@
+{
+  "system": {
+    "file_storage": "s3"
+  }
+}

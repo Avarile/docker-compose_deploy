@@ -30,7 +30,7 @@ FORCE=0
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-APPS=(gitea ghost twenty cybernetics plane vaultwarden)
+APPS=(gitea ghost twenty cybernetics plane vaultwarden evershop)
 
 gen() { openssl rand -hex 24; }
 
