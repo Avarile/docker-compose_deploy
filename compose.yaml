@@ -42,5 +42,3 @@ include:
     env_file: [.env, apps/cybernetics/.env]
   - path: apps/plane/compose.yaml
     env_file: [.env, apps/plane/.env]
-  - path: apps/evershop/compose.yaml
-    env_file: [.env, apps/evershop/.env]

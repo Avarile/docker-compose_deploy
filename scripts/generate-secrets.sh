@@ -30,7 +30,7 @@ FORCE=0
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-APPS=(gitea ghost twenty cybernetics plane vaultwarden evershop)
+APPS=(gitea ghost twenty cybernetics plane vaultwarden)
 
 gen() { openssl rand -hex 24; }
 
@@ -45,18 +45,30 @@ write_env() {
 }
 
 # ── 1. infra: every CHANGE_ME_* value becomes a fresh random secret ──
+# If infra/.env already exists (and isn't being --force'd), load ITS real
+# values into INFRA[] instead of generating unused phantom ones — otherwise
+# every CHANGE_ME_equals_infra_<KEY> token below resolves against secrets
+# that were never actually written to infra/.env.
 declare -A INFRA
-infra_content=""
-while IFS= read -r line || [[ -n "$line" ]]; do
-  if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=CHANGE_ME ]]; then
-    key="${BASH_REMATCH[1]}"
-    val="$(gen)"
+if [[ -f infra/.env && "$FORCE" -ne 1 ]]; then
+  echo "skip: infra/.env already exists (use --force to overwrite)"
+  while IFS='=' read -r key val || [[ -n "$key" ]]; do
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     INFRA["$key"]="$val"
-    line="${key}=${val}"
-  fi
-  infra_content+="${line}"$'\n'
-done <infra/.env.example
-write_env infra/.env "$infra_content"
+  done <infra/.env
+else
+  infra_content=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=CHANGE_ME ]]; then
+      key="${BASH_REMATCH[1]}"
+      val="$(gen)"
+      INFRA["$key"]="$val"
+      line="${key}=${val}"
+    fi
+    infra_content+="${line}"$'\n'
+  done <infra/.env.example
+  write_env infra/.env "$infra_content"
+fi
 
 # ── 2. each app: resolve equals_infra_* against INFRA[], generate the rest ──
 for app in "${APPS[@]}"; do

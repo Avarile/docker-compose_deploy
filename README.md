@@ -76,7 +76,6 @@ docker-deployment/
     ├── vaultwarden/  drawio/  main-website/
     ├── ghost/  gitea/            ← MySQL-backed (init creates db + user)
     ├── twenty/  cybernetics/     ← pgvector + redis + minio (init db + bucket)
-    ├── evershop/                 ← pgvector + minio (init db + bucket, no redis)
     └── plane/                    ← 13 svc + init + migrator (plane-config.env + .env)
 ```
 
@@ -179,7 +178,6 @@ regenerate everything from scratch (`make secrets FORCE=1`).
 | **Plane** | pgvector: role/db `plane` (via `plane-db`) | redis DB **1** (`plane-redis`) | minio bucket `plane-uploads` (`plane-minio`) | — |
 | **Twenty** | pgvector: db `twenty` | redis DB **3** | minio bucket `twenty` | — |
 | **cybernetics** | pgvector: db `cybernetics` + `cybernetics_embedding` | redis DB **0** | minio buckets `public` + `private` | — |
-| **EverShop** | pgvector: role/db `evershop` | — | minio bucket `evershop` | — |
 | **Ghost** | mysql: db `ghost` | — | — | — |
 | **Gitea** | mysql: db `gitea` | — | — | — |
 
@@ -201,7 +199,6 @@ All dedicated databases / buckets / vhosts are created automatically by the
 | qdrant | 30333 / 30334 | loopback | Vaultwarden | 30820 → 80 | loopback |
 | meilisearch | 30770 → 7700 | loopback | draw.io | 30880 → 8080 | loopback |
 | | | | main-website | 30587 → 9587 | loopback |
-| | | | EverShop | 30320 → 3000 | loopback |
 
 Everything marked **loopback** binds `127.0.0.1:<port>:<container-port>` — only
 processes on this host (namely Caddy) can reach it. The two **public**
