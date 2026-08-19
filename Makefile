@@ -11,6 +11,8 @@
 #   make logs S=api  follow logs for one service
 #   make pull        pull all registry images
 #   make config      render+validate the fully-merged compose model
+#   make backup-postgres  logical dump of every database on pgvector
+#   make backup-mysql     logical dump of every database on mysql
 # ─────────────────────────────────────────────────────────────────────────────
 
 DC        := docker compose
@@ -24,7 +26,7 @@ DATA_DIRS := postgres mysql redis rabbitmq/data rabbitmq/log minio qdrant \
              twenty plane-monitor plane
 
 .DEFAULT_GOAL := help
-.PHONY: help bootstrap network datadirs secrets up infra apps down restart ps logs pull config
+.PHONY: help bootstrap network datadirs secrets up infra apps down restart ps logs pull config backup-postgres backup-mysql
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -69,3 +71,9 @@ pull: ## Pull all registry images
 
 config: ## Render and validate the merged compose model
 	$(DC) config >/dev/null && echo "compose config OK"
+
+backup-postgres: ## Logical dump of every database on pgvector (RETENTION_DAYS=, BACKUP_ROOT=)
+	@./scripts/operational/backup-postgres.sh
+
+backup-mysql: ## Logical dump of every database on mysql (RETENTION_DAYS=, BACKUP_ROOT=)
+	@./scripts/operational/backup-mysql.sh
